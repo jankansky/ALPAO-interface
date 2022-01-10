@@ -46,6 +46,9 @@ Still to be implemented or determined:
 /* FITS */
 #include "fitsio.h"
 
+#define MAX_STRLEN 1000
+
+
 // interrupt signal handling for safe DM shutdown
 volatile sig_atomic_t stop;
 
@@ -66,6 +69,7 @@ void initializeSharedMemory(const char * shm_name, int ax1, int ax2)
     uint32_t *imsize;  // image size 
     int shared;        // 1 if image in shared memory
     int NBkw;          // number of keywords supported
+    int CBsize;
     IMAGE* SMimage;
 
     SMimage = (IMAGE*) malloc(sizeof(IMAGE));
@@ -82,8 +86,12 @@ void initializeSharedMemory(const char * shm_name, int ax1, int ax2)
     shared = 1;
     // allocate space for 10 keywords
     NBkw = 10;
+
+    // Circular bufer of 10 vectors
+    CBsize = 10;
+    
     // create an image in shared memory
-    ImageStreamIO_createIm(&SMimage[0], shm_name, naxis, imsize, atype, shared, NBkw);
+    ImageStreamIO_createIm(&SMimage[0], shm_name, naxis, imsize, atype, shared, NBkw, CBsize);
 
     /* flush all semaphores to avoid commanding the DM from a 
     backlog in shared memory */
@@ -92,7 +100,7 @@ void initializeSharedMemory(const char * shm_name, int ax1, int ax2)
     // write 0s to the image
     SMimage[0].md[0].write = 1; // set this flag to 1 when writing data
     int i;
-    for (i = 0; i < 11*11; i++)
+    for (i = 0; i < ax1*ax2; i++)
     {
       SMimage[0].array.F[i] = 0.;
     }
@@ -181,9 +189,9 @@ the influence function. */
 int parse_calibration_file(const char * serial, Scalar *max_stroke, Scalar *volume_factor)
 {
     char * alpao_calib;
-    char calibname[1000];
-    char calibpath[1000];
-    char serial_lc[1000];
+    char calibname[MAX_STRLEN*3];
+    char calibpath[MAX_STRLEN*3];
+    char serial_lc[MAX_STRLEN];
     FILE * fp;
     char * line = NULL;
     size_t len = 0;
@@ -197,10 +205,10 @@ int parse_calibration_file(const char * serial, Scalar *max_stroke, Scalar *volu
     }
 
     // find calibration file location from alpao_calib env variable
-    alpao_calib = getenv("alpao_calib");
-    strcpy(calibpath, alpao_calib);
-    sprintf(calibname, "/alpao_%s/%s_userconfig.txt", serial_lc, serial_lc);
-    strcat(calibpath, calibname);
+    alpao_calib = getenv("ALPAO_CALIB");
+    strncpy(calibpath, alpao_calib, MAX_STRLEN);
+    snprintf(calibname, MAX_STRLEN*3, "/%s_userconfig.txt", serial_lc);
+    strncat(calibpath, calibname, MAX_STRLEN);
 
     // open file
     fp = fopen(calibpath, "r");
@@ -242,9 +250,9 @@ int get_actuator_mapping(const char * serial, int nbAct, int * actuator_mapping)
     int ij = 0; /* actuator mapping index */
 
     char * alpao_calib;
-    char calibname[1000];
-    char calibpath[1000];
-    char serial_lc[1000];
+    char calibname[MAX_STRLEN*3];
+    char calibpath[MAX_STRLEN*3];
+    char serial_lc[MAX_STRLEN];
 
     // get file path to actuator map
 
@@ -253,10 +261,10 @@ int get_actuator_mapping(const char * serial, int nbAct, int * actuator_mapping)
       serial_lc[i] = tolower(serial[i]);
     }
 
-    alpao_calib = getenv("alpao_calib");
-    strcpy(calibpath, alpao_calib);
-    sprintf(calibname, "/alpao_%s/%s_actuator_mapping.fits", serial_lc, serial_lc);
-    strcat(calibpath, calibname);
+    alpao_calib = getenv("ALPAO_CALIB");
+    strncpy(calibpath, alpao_calib, MAX_STRLEN);
+    snprintf(calibname, MAX_STRLEN*3, "/%s_actuator_mapping.fits", serial_lc);
+    strncat(calibpath, calibname, MAX_STRLEN);
 
     if ( !fits_open_image(&fptr, calibpath, READONLY, &status) )
     {
@@ -313,7 +321,9 @@ int get_actuator_mapping(const char * serial, int nbAct, int * actuator_mapping)
 }
 
 /* Send command to mirror from shared memory */
-int sendCommand(asdkDM * dm, IMAGE * SMimage, int nbAct, int nobias, int nonorm, int fractional, Scalar max_stroke, Scalar volume_factor, int * actuator_mapping)
+int sendCommand(asdkDM * dm, IMAGE * SMimage, int nbAct, int nobias, int nonorm,
+		int fractional, Scalar max_stroke, Scalar volume_factor,
+		int * actuator_mapping)
 {
     COMPL_STAT ret;
     int idx;
@@ -376,7 +386,7 @@ int controlLoop(const char * serial, const char * shm_name, int nobias, int nono
     Scalar max_stroke;
     Scalar volume_factor;
     int *actuator_mapping;
-    int shm_dim = 11;
+    int shm_dim = 20;
 
     /* get max stroke and volume normalization factor from
     the user-defined config file */
